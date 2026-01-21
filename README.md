@@ -10,7 +10,7 @@ The R scripts in this repository accompany and support multiple related manuscri
    – Uses the code to evaluate the transferability of radiographic ossification frameworks across cetacean species.
 
 2. **Radiographic assessment of bone maturation: A tool to estimate sexual maturity in common dolphins**  
-   – Uses the code to model the relationship between flipper ossification patterns and sexual maturity using probabilistic and multivariate approaches.
+   – Uses the code to model the relationship between flipper ossification patterns and sexual maturity using probabilistic approaches.
 
 While the same analytical framework is used across these studies, each manuscript addresses a distinct research question and analytical objective. Data used in the analyses are archived separately and referenced in the respective publications.
 
