@@ -6,12 +6,16 @@ This repository currently contains R code supporting analyses of radiographic pe
 
 The R scripts in this repository accompany and support multiple related manuscripts that address complementary aspects of radiographic skeletal assessment:
 
-1. **Cross-species applicability of radiographic flipper ossification** (in press)  
-   – Inter-observer error: potential observer-related bias was tested using generalized linear mixed-effects models (GLMMs; lme4 package) on a subset of 40 radiographs scored by two independent observers.
-   – Correlation of ossification scores with age: relationships between ossification stage and dental age were assessed using Spearman’s rank correlation (ρ), run separately for males and females.
-   – Precedence matrix analysis: pairwise comparisons among bones were used to establish the typical developmental order of ossification and to visualize sex- and side-specific variation.
+1. **Cross-species applicability of radiographic flipper ossification** (in press)
+     
+   – Inter-observer error: potential observer-related bias was assessed using generalized linear mixed-effects models (GLMMs; lme4 package) on a subset of 40 radiographs independently scored by two observers.
    
-3. **Radiographic assessment of bone maturation: A tool to estimate sexual maturity in common dolphins**  
+   – Correlation with age: relationships between ossification scores and dental age were evaluated using Spearman’s rank correlation (ρ), analysed separately for males and females.
+   
+   – Precedence matrix analysis: pairwise comparisons among bones were used to determine the typical developmental order of ossification and to visualise sex- and side-specific variation.
+   
+3. **Radiographic assessment of bone maturation: A tool to estimate sexual maturity in common dolphins**
+     
    – Uses the code to model the relationship between flipper ossification patterns and sexual maturity using probabilistic approaches.
 
 While the same analytical framework is used across these studies, each manuscript addresses a distinct research question and analytical objective. Data used in the analyses are archived separately and referenced in the respective publications.
