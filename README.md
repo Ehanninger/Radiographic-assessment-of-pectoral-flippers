@@ -8,15 +8,15 @@ The R scripts in this repository accompany and support multiple related manuscri
 
 1. **Cross-species applicability of a bone-ageing method in delphinids** (in press)
      
-   – Inter-observer error: potential observer-related bias was assessed using generalized linear mixed-effects models (GLMMs; lme4 package) on a subset of 40 radiographs independently scored by two observers.
+   - Inter-observer error: potential observer-related bias was assessed using generalized linear mixed-effects models (GLMMs; lme4 package) on a subset of 40 radiographs independently scored by two observers.
    
-   – Correlation with age: relationships between ossification scores and dental age were evaluated using Spearman’s rank correlation (ρ), analysed separately for males and females.
+   - Correlation with age: relationships between ossification scores and dental age were evaluated using Spearman’s rank correlation (ρ), analysed separately for males and females.
    
-   – Precedence matrix analysis: pairwise comparisons among bones were used to determine the typical developmental order of ossification and to visualise sex- and side-specific variation.
+   - Precedence matrix analysis: pairwise comparisons among bones were used to determine the typical developmental order of ossification and to visualise sex- and side-specific variation.
    
 3. **Radiographic assessment of bone maturation: A tool to estimate sexual maturity in common dolphins (*Delphinus delphis*)?**
      
-   – Uses the code to model the relationship between flipper ossification patterns and sexual maturity using probabilistic approaches.
+   - Uses the code to model the relationship between flipper ossification patterns and sexual maturity using probabilistic approaches.
 
 
 ## Repository contents
