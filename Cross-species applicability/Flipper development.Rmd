@@ -1,0 +1,635 @@
+---
+title: "Spearman correlation bone scores"
+author: "Evi Hanninger"
+date: "21/01/2025"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+---
+
+```{r setup, include=FALSE}
+
+# Load necessary libraries
+library(knitr)
+library(htmltools)
+library(rmarkdown)
+
+```
+
+
+
+```{r libraries, results=FALSE, message=FALSE}
+
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+install_if_needed <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+
+install_if_needed("readxl")
+install_if_needed("dplyr")
+install_if_needed("glmnet")
+install_if_needed("purrr")
+install_if_needed("tibble")
+install_if_needed("stringr")
+install_if_needed("stats")
+install_if_needed("readr")
+install_if_needed("dendextend")
+
+
+library(tibble)
+library(purrr)
+library(dplyr)
+library(glmnet)
+library(readxl)
+library(stringr)
+library(stats)
+library(readr)
+
+print("This output will be hidden.")
+```
+
+# **1. Age by sex distribution
+
+```{r Age by sex, message=FALSE, results='hide'}
+suppressPackageStartupMessages({
+  library(readxl)
+  library(dplyr)
+  library(ggplot2)
+})
+
+# ------------------------
+# Paths
+# ------------------------
+excel_path <- "C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 3 Flipper development/Data analysis/Pectoral fin data.xlsx"
+sheet_name <- "Spearman"
+out_dir    <- "C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 3 Flipper development/Data analysis"
+
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+
+# ------------------------
+# Read & Clean
+# ------------------------
+df_raw <- readxl::read_excel(excel_path, sheet = sheet_name)
+
+names(df_raw) <- make.names(names(df_raw))
+
+df_clean <- df_raw %>%
+  mutate(
+    Age = suppressWarnings(as.numeric(Age)),
+    Sex = factor(Sex, levels = c("F", "M"))
+  ) %>%
+  filter(!is.na(Age))   # remove ND
+
+# Round fractional ages DOWN
+df_clean <- df_clean %>%
+  mutate(AgeRounded = floor(Age))
+
+
+# ------------------------
+# Compute max age for each sex
+# ------------------------
+max_F <- df_clean %>% filter(Sex == "F") %>% pull(AgeRounded) %>% max(na.rm = TRUE)
+max_M <- df_clean %>% filter(Sex == "M") %>% pull(AgeRounded) %>% max(na.rm = TRUE)
+
+# Compute x-axis limits
+x_min <- min(df_clean$AgeRounded, na.rm = TRUE)
+x_max <- max(df_clean$AgeRounded, na.rm = TRUE)
+
+
+# ------------------------
+# Colours
+# ------------------------
+col_F <- "#BFD7F0"  # light blue
+col_M <- "#4F5B94"  # dark blue
+
+
+# ------------------------
+# Plot (NO TITLE)
+# ------------------------
+p <- ggplot(df_clean, aes(x = AgeRounded, fill = Sex)) +
+  geom_histogram(binwidth = 1, position = "stack", colour = "black") +
+  scale_fill_manual(values = c(F = col_F, M = col_M)) +
+  scale_x_continuous(breaks = seq(x_min, x_max, 1)) +
+  labs(
+    x = "Age (years)",
+    y = "Number of individuals",
+    fill = "Sex"
+    # no title
+  ) +
+  
+  # ------------------------
+  # Your FONT SIZES
+  # ------------------------
+  theme_classic(base_size = 14) +
+  theme(
+    legend.position = "right",
+    legend.title = element_text(size = 16),
+    legend.text  = element_text(size = 14),
+    axis.title.x = element_text(size = 16, margin = margin(t = 10)),
+    axis.title.y = element_text(size = 16, margin = margin(r = 10)),
+    axis.text.x  = element_text(size = 14),
+    axis.text.y  = element_text(size = 14)
+  ) +
+  
+  # ------------------------
+  # Your TWO annotate() LABELS
+  # ------------------------
+  annotate("text",
+           x = (x_min + x_max) / 2,
+           y = 12.5,
+           label = paste0("Max age (F): ", ifelse(is.finite(max_F), max_F, "NA")),
+           hjust = 0.5, vjust = 0, size = 5.5) +
+  annotate("text",
+           x = (x_min + x_max) / 2,
+           y = 11.5,
+           label = paste0("Max age (M): ", ifelse(is.finite(max_M), max_M, "NA")),
+           hjust = 0.5, vjust = 0, size = 5.5)
+
+
+# ------------------------
+# Save plot
+# ------------------------
+save_path <- file.path(out_dir, "Age_distribution_stacked_histogram.png")
+
+ggsave(
+  filename = save_path,
+  plot = p,
+  width = 12,
+  height = 8,
+  dpi = 300
+)
+
+message("Saved plot to: ", save_path)
+
+
+```
+
+
+
+# **2. Spearman correlation
+
+
+```{r Spearman, results='hide', message=FALSE}
+# =======================================================
+# Spearman correlations with Age (ALL, F, M) — save CSVs
+# =======================================================
+
+suppressPackageStartupMessages({
+  library(readxl); library(dplyr); library(tidyr); library(purrr); library(stringr)
+})
+
+# --- Paths ---
+excel_path <- "C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 3 Flipper development/Data analysis/Pectoral fin data.xlsx"
+sheet_name <- "Spearman"
+out_dir <- "C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 3 Flipper development/Data analysis/Spearman correlations"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# --- Column names ---
+age_col      <- make.names("Age")
+sex_col      <- make.names("Sex")
+
+# --- Read & clean (DROP ND in Age) ---
+df_raw <- readxl::read_excel(excel_path, sheet = sheet_name)
+names(df_raw) <- make.names(names(df_raw))
+
+df <- df_raw %>%
+  filter(!(.data[[age_col]] %in% c("ND","Nd","nd"))) %>%
+  mutate(!!age_col := suppressWarnings(as.numeric(.data[[age_col]]))) %>%
+  filter(!is.na(.data[[age_col]]))
+
+# --- Helpers ---
+pretty_lab <- function(x) gsub("\\.", " ", x)
+
+# All numeric vars except Age & Sex — for correlations
+all_numeric_cols <- names(df)[vapply(df, is.numeric, logical(1))]
+all_numeric_cols <- setdiff(all_numeric_cols, c(age_col, sex_col))
+
+# -------------- Per-site Spearman correlations (ALL, F, M) --------------
+# (use *all* animals; no exclusion filter)
+compute_and_save_corr <- function(data, label) {
+  y <- data[[age_col]]
+  Xcols <- intersect(all_numeric_cols, names(data))
+  if (!length(Xcols)) return(invisible(NULL))
+
+  spearman_tbl <- purrr::map_dfr(Xcols, function(v) {
+    ct <- suppressWarnings(cor.test(y, data[[v]], method = "spearman", exact = FALSE))
+    tibble(
+      Location_safe = v,
+      Location      = pretty_lab(v),
+      rho_age       = unname(ct$estimate),
+      p             = ct$p.value
+    )
+  }) %>%
+    mutate(p_FDR = p.adjust(p, method = "fdr")) %>%
+    arrange(desc(abs(rho_age)))
+
+  out_csv <- file.path(out_dir, sprintf("sites_corr_with_age_FDR_%s.csv", label))
+  write.csv(spearman_tbl, out_csv, row.names = FALSE)
+  message("Saved: ", out_csv)
+}
+
+# Run for ALL, Females, Males
+compute_and_save_corr(df, "ALL")
+
+df_F <- df %>% filter(.data[[sex_col]] == "F")
+df_M <- df %>% filter(.data[[sex_col]] == "M")
+
+if (nrow(df_F) > 1) compute_and_save_corr(df_F, "F")
+if (nrow(df_M) > 1) compute_and_save_corr(df_M, "M")
+
+# =======================================================
+# Spearman correlations with Age (ALL, F, M) — save CSVs
+# (single 'Location' column; no duplicate name)
+# =======================================================
+
+suppressPackageStartupMessages({
+  library(readxl); library(dplyr); library(tidyr); library(purrr); library(stringr)
+})
+
+# --- Paths ---
+excel_path <- "C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 3 Flipper development/Data analysis/Pectoral fin data.xlsx"
+sheet_name <- "Spearman"
+out_dir <- "C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 3 Flipper development/Data analysis/Spearman correlations"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# --- Column names ---
+age_col <- make.names("Age")
+sex_col <- make.names("Sex")
+
+# --- Read & clean (DROP ND in Age) ---
+df_raw <- readxl::read_excel(excel_path, sheet = sheet_name)
+names(df_raw) <- make.names(names(df_raw))
+
+df <- df_raw %>%
+  filter(!(.data[[age_col]] %in% c("ND","Nd","nd"))) %>%
+  mutate(!!age_col := suppressWarnings(as.numeric(.data[[age_col]]))) %>%
+  filter(!is.na(.data[[age_col]]))
+
+# All numeric vars except Age & Sex — for correlations
+all_numeric_cols <- names(df)[vapply(df, is.numeric, logical(1))]
+all_numeric_cols <- setdiff(all_numeric_cols, c(age_col, sex_col))
+
+# -------------- Per-site Spearman correlations (ALL, F, M) --------------
+# (use *all* animals; no exclusion filter)
+compute_and_save_corr <- function(data, label) {
+  y <- data[[age_col]]
+  Xcols <- intersect(all_numeric_cols, names(data))
+  if (!length(Xcols)) return(invisible(NULL))
+
+  spearman_tbl <- purrr::map_dfr(Xcols, function(v) {
+    ct <- suppressWarnings(cor.test(y, data[[v]], method = "spearman", exact = FALSE))
+    tibble(
+      Location = v,
+      rho_age  = unname(ct$estimate),
+      p        = ct$p.value
+    )
+  }) %>%
+    mutate(p_FDR = p.adjust(p, method = "fdr")) %>%
+    arrange(desc(abs(rho_age)))
+
+  out_csv <- file.path(out_dir, sprintf("sites_corr_with_age_FDR_%s.csv", label))
+  write.csv(spearman_tbl, out_csv, row.names = FALSE)
+  message("Saved: ", out_csv)
+}
+
+# Run for ALL, Females, Males
+compute_and_save_corr(df, "ALL")
+
+df_F <- df %>% filter(.data[[sex_col]] == "F")
+df_M <- df %>% filter(.data[[sex_col]] == "M")
+
+if (nrow(df_F) > 1) compute_and_save_corr(df_F, "F")
+if (nrow(df_M) > 1) compute_and_save_corr(df_M, "M")
+
+```
+
+
+# **3. Ossification sequence
+
+```{r Ossification sequence, results='hide', message=FALSE}
+# =======================================================
+# Precedence matrix P(i > j), include ties as 0.5
+# STRICTLY plot only your requested bones IN YOUR ORDER.
+# Rows=i, Cols=j; base heatmap with percent labels.
+# =======================================================
+
+suppressPackageStartupMessages({ library(readxl); library(dplyr) })
+
+# ---------- Paths ----------
+
+excel_path <- "C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 3 Flipper development/Data analysis/Pectoral fin data.xlsx"
+sheet_name <- "Spearman"
+out_dir <- "C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 3 Flipper development/Data analysis/Heatmaps"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+stopifnot(file.exists(excel_path))
+stopifnot(sheet_name %in% readxl::excel_sheets(excel_path))
+
+# ---------- YOUR EXACT ORDER ----------
+fixed_order <- c(
+  "Radius","M2pr","Ulna","M3pr","M2dis","D2P1pr","M3dis","D2p1dis",
+  "M4pr","D3P1pr","D2P2pr","D2P2dis","D3P1dis","D3P2pr","D3P2dis",
+  "M5","M4dis","D4P1"
+)
+
+# ---------- Column names ----------
+sex_col     <- make.names("Sex")
+exclude_col <- make.names("Exclude")
+
+# ---------- Helpers ----------
+strip_side <- function(v) gsub("(_L|_R|L$|R$)$", "", v, perl = TRUE)
+is_numish  <- function(x) is.numeric(x) || is.character(x) || is.list(x)
+
+coerce_numeric_cols <- function(dat, cols){
+  cols <- intersect(cols, names(dat)); if (!length(cols)) return(dat)
+  for (nm in cols){
+    x <- dat[[nm]]
+    if (is.list(x)) {
+      x <- vapply(x, function(xx) if (length(xx)==0 || is.null(xx)) NA_character_ else as.character(xx), character(1))
+      dat[[nm]] <- suppressWarnings(as.numeric(x))
+    } else if (is.character(x)) {
+      dat[[nm]] <- suppressWarnings(as.numeric(x))
+    } else if (!is.numeric(x)) {
+      dat[[nm]] <- suppressWarnings(as.numeric(as.character(x)))
+    }
+  }
+  dat
+}
+
+get_side_cols <- function(cols, side = c("L","R")){
+  side <- match.arg(side)
+  union(grep(paste0(side, "$"),  cols, value = TRUE),
+        grep(paste0("_", side, "$"), cols, value = TRUE))
+}
+
+# P(i>j) including ties (ties contribute 0.5)
+precedence_matrix <- function(dat, col_names, min_pairs = 5){
+  dat <- coerce_numeric_cols(dat, col_names)
+  K <- length(col_names)
+  P <- matrix(NA_real_, K, K, dimnames = list(col_names, col_names))
+  N <- matrix(0L,       K, K, dimnames = list(col_names, col_names))
+  for (i in seq_len(K)){
+    xi_all <- dat[[col_names[i]]]
+    for (j in seq_len(K)){
+      if (i == j) next
+      xj_all <- dat[[col_names[j]]]
+      ok <- is.finite(xi_all) & is.finite(xj_all)
+      if (!any(ok)) next
+      xi <- xi_all[ok]; xj <- xj_all[ok]
+      # Include ties as 0.5
+      score <- mean(ifelse(xi > xj, 1, ifelse(xi < xj, 0, 0.5)))
+      n     <- length(xi)
+      N[i,j] <- n
+      if (n >= min_pairs) P[i,j] <- score
+    }
+  }
+  list(P = P, N = N)
+}
+
+# Base heatmap with % labels; rows=i, cols=j; row1 at top
+plot_heatmap <- function(P_ord, title, file_stub){
+  diag(P_ord) <- NA_real_
+  ts <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  f_png <- file.path(out_dir, paste0("precedence_heatmap_", file_stub, "_", ts, ".png"))
+  png(f_png, width = 2200, height = 2000, res = 230); on.exit(dev.off(), add = TRUE)
+
+  par(mar = c(16,6,6,8))
+  Z <- t(P_ord)[, nrow(P_ord):1, drop = FALSE]  # transpose + vertical flip
+  image(x = seq_len(ncol(P_ord)), y = seq_len(nrow(P_ord)), z = Z,
+        zlim = c(0,1), axes = FALSE, main = title, xlab = "", ylab = "")
+  axis(1, at = seq_len(ncol(P_ord)), labels = colnames(P_ord), las = 2)
+  axis(2, at = seq_len(nrow(P_ord)), labels = rev(rownames(P_ord)), las = 2)
+
+  num_lab <- matrix(sprintf("%.0f%%", 100*P_ord),
+                    nrow = nrow(P_ord), ncol = ncol(P_ord),
+                    dimnames = dimnames(P_ord))
+  V <- num_lab[nrow(P_ord):1, , drop = FALSE]
+  for (i in seq_len(nrow(V))) for (j in seq_len(ncol(V)))
+    if (is.finite(P_ord[nrow(P_ord)-i+1, j])) text(j, i, V[i, j], cex = 0.75)
+
+  # legend
+  par(fig = c(0.90, 0.94, 0.20, 0.80), new = TRUE, mar = c(0,0,0,0))
+  yl   <- seq(0, 1, length.out = 255)
+  zleg <- matrix(yl, nrow = 1, ncol = length(yl))
+  image(x = 1, y = yl, z = zleg, axes = FALSE, xlab = "", ylab = "", zlim = c(0,1))
+  axis(4, at = seq(0, 1, 0.2), las = 1)
+  par(new = FALSE)
+
+  message("Saved: ", f_png)
+}
+
+# ---------- Read & prepare ----------
+df_raw <- read_excel(excel_path, sheet = sheet_name, .name_repair = make.names)
+dfC    <- df_raw %>% filter(is.na(.data[[exclude_col]]) | .data[[exclude_col]] != "Y")
+dfF    <- dfC %>% filter(.data[[sex_col]] == "F")
+dfM    <- dfC %>% filter(.data[[sex_col]] == "M")
+
+maybe_site  <- names(df_raw)[vapply(df_raw, is_numish, logical(1))]
+drop_always <- make.names(c("Age","Maturity"))
+site_candidates <- setdiff(maybe_site, drop_always)
+left_cols_all  <- get_side_cols(site_candidates, "L")
+right_cols_all <- get_side_cols(site_candidates, "R")
+
+# ---------- Run blocks ----------
+run_block <- function(dat, side_cols, sex_lab, side_lab, stub){
+  cols <- intersect(side_cols, names(dat))
+  res  <- precedence_matrix(dat[, cols, drop = FALSE], cols, min_pairs = 5)
+  P    <- res$P; N <- res$N
+
+  # Map to base names and enforce fixed_order
+  base_names <- strip_side(colnames(P))
+  name_map   <- setNames(colnames(P), base_names)
+  wanted     <- fixed_order[fixed_order %in% base_names]
+  ordered_nm <- unname(name_map[wanted])
+
+  if (!length(ordered_nm)) stop("None of your requested bones are present.")
+
+  P_ord <- P[ordered_nm, ordered_nm, drop = FALSE]
+  dimnames(P_ord) <- list(wanted, wanted)
+
+  # Save CSVs
+  ts <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  write.csv(round(P_ord, 4),
+            file.path(out_dir, paste0("precedence_matrix_ordered_", stub, "_", ts, ".csv")),
+            row.names = TRUE)
+  write.csv(N[ordered_nm, ordered_nm, drop = FALSE],
+            file.path(out_dir, paste0("pair_counts_", stub, "_", ts, ".csv")),
+            row.names = TRUE)
+
+  # Plot
+  plot_heatmap(P_ord,
+               title = sprintf("Precedence matrix P(i > j) – %s (%s flipper)", sex_lab, side_lab),
+               file_stub = paste0(stub, "_", ts))
+}
+
+# ---- Females / Left / Right; Males / Left / Right
+run_block(dfF, left_cols_all,  "Females", "Left",  "F_left")
+run_block(dfM, left_cols_all,  "Males",   "Left",  "M_left")
+run_block(dfF, right_cols_all, "Females", "Right", "F_right")
+run_block(dfM, right_cols_all, "Males",   "Right", "M_right")
+
+message("Done: ", out_dir)
+
+
+```
+
+
+# **4. Bilateral assymmetry
+
+```{r t-test, results='hide', message=FALSE}
+
+# ===== Bilaterality analysis: Permutation test (signed), Absolute mean differences (|L-R|), Binomial sign test =====
+# - Paired permutation test on mean(L - R) using ALL pairs (assumption-free)
+# - Absolute mean difference |L-R| with bootstrap 95% CI:
+#     (a) across ALL dolphins (population-level)
+#     (b) among NON-ZERO cases only (severity when present)
+# - Exact binomial sign test on NON-ZERO cases (directional bias)
+# Outputs a TXT + CSV summary in a "Bilaterality_tests" folder next to the Excel file.
+
+# --- Inputs ---
+excel_path <- "C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 3 Flipper development/Data analysis/Pectoral fin data.xlsx"
+sheet_name <- "Bilaterality"
+
+suppressPackageStartupMessages({
+  library(readxl)
+  library(dplyr)
+  library(boot)     # bootstrap CIs
+  library(readr)
+})
+
+# --- Read & prep ---
+dat <- read_excel(excel_path, sheet = sheet_name) |>
+  mutate(
+    BoneScoreL = as.numeric(BoneScoreL),
+    BoneScoreR = as.numeric(BoneScoreR)
+  ) |>
+  filter(!is.na(BoneScoreL) & !is.na(BoneScoreR))
+
+diffs <- dat$BoneScoreL - dat$BoneScoreR
+n     <- length(diffs)
+
+# --------------------------------------------------------------------------------
+# 1) PAIRED PERMUTATION TEST on signed mean difference mean(L - R)  [ALL pairs]
+# --------------------------------------------------------------------------------
+set.seed(123)
+B_perm   <- 100000
+obs_mean <- mean(diffs)
+
+# sign-flip permutations; zeros unaffected automatically
+signs <- matrix(sample(c(-1L, 1L), size = n * B_perm, replace = TRUE), nrow = n)
+perm_means <- colMeans(diffs * signs)
+p_perm <- (sum(abs(perm_means) >= abs(obs_mean)) + 1) / (B_perm + 1)
+
+# Bootstrap 95% CI for signed mean difference (mean(L - R))
+set.seed(123)
+boot_mean_fun <- function(d, i) mean(d[i])
+boot_signed   <- boot(diffs, statistic = boot_mean_fun, R = 5000)
+ci_signed     <- boot.ci(boot_signed, type = c("bca", "perc"))
+ci_signed_bca <- if (!is.null(ci_signed$bca)) ci_signed$bca[4:5] else c(NA_real_, NA_real_)
+ci_signed_pct <- if (!is.null(ci_signed$perc)) ci_signed$perc[4:5] else c(NA_real_, NA_real_)
+
+# --------------------------------------------------------------------------------
+# 2) ABSOLUTE MEAN DIFFERENCE |L - R|  (fluctuating asymmetry)
+# --------------------------------------------------------------------------------
+# (a) Across ALL dolphins
+FA_mean_all <- mean(abs(diffs))
+set.seed(123)
+boot_abs_fun <- function(d, i) mean(abs(d[i]))
+boot_abs_all <- boot(diffs, statistic = boot_abs_fun, R = 5000)
+ci_abs_all   <- boot.ci(boot_abs_all, type = c("bca","perc"))
+ci_abs_all_bca <- if (!is.null(ci_abs_all$bca)) ci_abs_all$bca[4:5] else c(NA_real_, NA_real_)
+ci_abs_all_pct <- if (!is.null(ci_abs_all$perc)) ci_abs_all$perc[4:5] else c(NA_real_, NA_real_)
+
+# (b) Among NON-ZERO cases only (severity when present)
+nz <- diffs[diffs != 0]
+m  <- length(nz)
+FA_mean_nonzero <- if (m > 0) mean(abs(nz)) else NA_real_
+boot_abs_nz <- if (m > 0) boot(nz, statistic = boot_abs_fun, R = 5000) else NULL
+ci_abs_nz <- if (!is.null(boot_abs_nz)) boot.ci(boot_abs_nz, type = c("bca","perc")) else NULL
+ci_abs_nz_bca <- if (!is.null(ci_abs_nz$bca)) ci_abs_nz$bca[4:5] else c(NA_real_, NA_real_)
+ci_abs_nz_pct <- if (!is.null(ci_abs_nz$perc)) ci_abs_nz$perc[4:5] else c(NA_real_, NA_real_)
+
+# --------------------------------------------------------------------------------
+# 3) EXACT BINOMIAL SIGN TEST on NON-ZERO cases (directional asymmetry)
+# --------------------------------------------------------------------------------
+k_left  <- sum(nz > 0)     # L > R
+k_right <- sum(nz < 0)     # R > L
+binom_p <- NA_real_; binom_ci <- c(NA_real_, NA_real_)
+if (m > 0) {
+  binom_res <- binom.test(k_left, m, p = 0.5)
+  binom_p   <- binom_res$p.value
+  binom_ci  <- binom_res$conf.int
+}
+
+# --------------------------------------------------------------------------------
+# OUTPUT
+# --------------------------------------------------------------------------------
+timestamp <- format(Sys.time(), "%Y-%m-%d_%H%M")
+out_dir   <- file.path(dirname(excel_path), "Bilaterality_tests")
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+lines_out <- c(
+  "=== Bilaterality: permutation (signed), |L-R| magnitudes, and sign/binomial ===",
+  paste0("Timestamp: ", timestamp),
+  paste0("File: ", excel_path, "  [sheet: ", sheet_name, "]"),
+  paste0("N pairs (all): ", n),
+  "",
+  "--- Paired permutation test on signed mean difference (ALL pairs; L - R) ---",
+  sprintf("Signed mean difference (L - R) = %.3f", obs_mean),
+  sprintf("Permutation p (two-sided) = %.3g  [B=%d]", p_perm, B_perm),
+  sprintf("95%% CI for mean(L - R) (BCa) = [%.3f, %.3f]", ci_signed_bca[1], ci_signed_bca[2]),
+  sprintf("95%% CI for mean(L - R) (percentile) = [%.3f, %.3f]", ci_signed_pct[1], ci_signed_pct[2]),
+  "",
+  "--- Absolute mean difference |L - R| (fluctuating asymmetry) ---",
+  sprintf("Across ALL dolphins: mean |L - R| = %.3f", FA_mean_all),
+  sprintf("95%% CI (BCa) = [%.3f, %.3f]; 95%% CI (percentile) = [%.3f, %.3f]",
+          ci_abs_all_bca[1], ci_abs_all_bca[2], ci_abs_all_pct[1], ci_abs_all_pct[2]),
+  "",
+  sprintf("Among NON-ZERO dolphins (n=%d): mean |L - R| = %.3f", m, FA_mean_nonzero),
+  sprintf("95%% CI (BCa) = [%.3f, %.3f]; 95%% CI (percentile) = [%.3f, %.3f]",
+          ci_abs_nz_bca[1], ci_abs_nz_bca[2], ci_abs_nz_pct[1], ci_abs_nz_pct[2]),
+  "",
+  "--- Exact binomial sign test (NON-ZERO cases) ---",
+  sprintf("Counts: L>R = %d, R>L = %d, Equal = %d", k_left, k_right, n - m),
+  sprintf("Binomial p (P[L>R]=0.5) = %s; 95%% CI for P[L>R] = [%s, %s]",
+          ifelse(is.na(binom_p), "NA", formatC(binom_p, format = "g", digits = 4)),
+          ifelse(is.na(binom_ci[1]), "NA", sprintf("%.3f", binom_ci[1])),
+          ifelse(is.na(binom_ci[2]), "NA", sprintf("%.3f", binom_ci[2])))
+)
+
+cat(paste0(paste(lines_out, collapse = "\n"), "\n"))
+
+# Save TXT & CSV
+out_txt <- file.path(out_dir, paste0("bilaterality_full_", timestamp, ".txt"))
+writeLines(lines_out, con = out_txt)
+
+summary_row <- tibble::tibble(
+  timestamp = timestamp,
+  n_pairs = n,
+  signed_mean_diff = obs_mean,
+  perm_p_two_sided = p_perm,
+  ci_signed_bca_lo = ci_signed_bca[1],
+  ci_signed_bca_hi = ci_signed_bca[2],
+  mean_abs_diff_all = FA_mean_all,
+  ci_abs_all_bca_lo = ci_abs_all_bca[1],
+  ci_abs_all_bca_hi = ci_abs_all_bca[2],
+  nonzero_pairs = m,
+  mean_abs_diff_nonzero = FA_mean_nonzero,
+  ci_abs_nz_bca_lo = ci_abs_nz_bca[1],
+  ci_abs_nz_bca_hi = ci_abs_nz_bca[2],
+  L_greater_R = k_left,
+  R_greater_L = k_right,
+  binom_p = binom_p,
+  binom_ci_lo = binom_ci[1],
+  binom_ci_hi = binom_ci[2]
+)
+out_csv <- file.path(out_dir, paste0("bilaterality_full_", timestamp, ".csv"))
+readr::write_csv(summary_row, out_csv)
+
+cat("Saved files:\n  ", out_txt, "\n  ", out_csv, "\n", sep = "")
+
+```
