@@ -1,0 +1,1439 @@
+---
+title: "Sexual maturity in relation to bone age"
+author: "Evi Hanninger"
+date: "21/01/2025"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+---
+
+```{r setup, include=FALSE}
+
+# Load necessary libraries
+library(knitr)
+library(htmltools)
+library(rmarkdown)
+
+```
+
+```{r libraries, results=FALSE, message=FALSE}
+
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+install_if_needed <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+
+install_if_needed("ggplot2")
+install_if_needed("colorspace")
+install_if_needed("loo")
+install_if_needed("scales")
+install_if_needed("kableExtra")
+install_if_needed("knitr")
+install_if_needed("cowplot")
+install_if_needed("bibtex")
+install_if_needed("bayesplot")
+install_if_needed("patchwork")
+install_if_needed("ggstance")
+install_if_needed("GGally")
+install_if_needed("dplyr")
+install_if_needed("brms")
+install_if_needed("tidybayes")
+install_if_needed("modelr")
+install.packages("boot") 
+install.packages("rstan") 
+install.packages("purrr")
+install.packages("tibble")
+
+library(tibble)
+library(purrr)
+library(ggplot2)
+library(colorspace)
+library(loo)
+library(scales)
+library(kableExtra)
+library(knitr)
+library(cowplot)
+library(bibtex)
+library(bayesplot)
+library(patchwork)
+library(ggstance)
+library(GGally)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(brms)
+library(tidybayes)
+library(modelr)
+library(boot)
+library(readxl)
+library(rstan)
+
+print("This output will be hidden.")
+```
+
+
+# **1. Total bone score
+
+## **1.1. Females **
+
+### **a) Data preparation
+
+```{r dataprep1.1, results='hide', message=FALSE}
+
+rm(list = ls()) 
+library(readxl)
+library(dplyr)
+library(stringr)
+
+# Load
+path <- "C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 4 Bone age/Statistical analysis/5. Scores for the whole data set.xlsx"
+raw <- read_excel(path, sheet = "Females_Aging")
+
+# Clean + coerce types robustly, drop NA-like values
+SexualmaturityF_total <- raw %>%
+  # Trim any stray spaces in headers
+  rename_with(trimws) %>%
+  # Coerce 'OssificationR' to numeric from ANY form (numeric/character/factor/date/with % or commas)
+  mutate(
+    OssificationR = as.character(OssificationR),
+    OssificationR = str_replace_all(OssificationR, ",", "."),
+    OssificationR = str_replace_all(OssificationR, "[^0-9.\\-]", ""),   # keep digits, dot, minus
+    OssificationR = na_if(trimws(OssificationR), ""),
+    OssificationR = as.numeric(OssificationR),
+
+    # Normalise Maturity to 0/1 from various codings (0/1, yes/no, mature/immature, etc.)
+    Maturity_chr = tolower(trimws(as.character(Maturity))),
+    Maturity = case_when(
+      Maturity_chr %in% c("1","yes","true","adult","mature") ~ 1L,
+      Maturity_chr %in% c("0","no","false","immature","imm") ~ 0L,
+      TRUE ~ NA_integer_
+    )
+  ) %>%
+  # Now drop the rows with missing OssificationR (and optionally missing Maturity)
+  filter(!is.na(OssificationR)) %>%
+  filter(OssificationR >= 40, OssificationR <= 90) %>%
+  filter(!is.na(Maturity)) %>%      # <- include if you require Maturity to be present
+  mutate(row_id = row_number()) %>%
+  select(-Maturity_chr)
+
+# Counts
+n_0_F_Total <- sum(SexualmaturityF_total$Maturity == 0, na.rm = TRUE)
+n_1_F_Total <- sum(SexualmaturityF_total$Maturity == 1, na.rm = TRUE)
+
+# Quick sanity checks
+cat("Rows kept:", nrow(SexualmaturityF_total), "\n")
+summary(SexualmaturityF_total$OssificationR)
+table(SexualmaturityF_total$Maturity, useNA = "ifany")
+
+
+```
+
+**Display data:**
+
+```{r datadisplay1.1}
+
+x_len = 501
+n_draws = 200
+llow = min(SexualmaturityF_total$OssificationR) %>% floor
+lhigh = max(SexualmaturityF_total$OssificationR) %>% ceiling
+
+
+SexualmaturityF_total <- SexualmaturityF_total %>%
+  mutate(Sex = factor(dplyr::recode(as.character(Sex),
+                                    "F" = "Female",
+                                    "M" = "Male")))
+
+ggplot() +
+  geom_jitter(
+    aes(y = Maturity, x = OssificationR, colour = Sex, shape = Sex), 
+    data = SexualmaturityF_total,
+    size = 1.5, alpha = 0.5, width = 0, height = 0.02
+  ) +
+  scale_colour_manual(values = c("Female" = "#FF0000", "Male" = "#1E90FF")) + 
+  scale_shape_manual(values = c("Female" = 1, "Male" = 2)) +
+  scale_x_continuous(breaks = seq(0, max(SexualmaturityF_total$OssificationR, na.rm = TRUE), by = 10))
+
+```
+
+### **b) Predictive prior test**
+
+
+```{r predictivepriortest1.1.}
+
+
+
+sim_hof2 <- function(x, m, w) {
+  eta <- w * (x - m)
+  inv.logit(eta)
+}
+
+nsim <- 500
+
+expand_grid(
+  x = 40:100,
+  data.frame(
+    m = rnorm(nsim, mean = 76, sd = 2),          # ← was 75,2  | now steep around 76
+    w = abs(rnorm(nsim, mean = 0.8, sd = 0.2)),  # ← was 1.6,.2 | now steeper width
+    group = 1:nsim
+  )
+) %>%
+  mutate(p = sim_hof2(x = x, m = m, w = w)) %>%
+  ggplot() +
+  aes(x = x, y = p, group = group) +
+  geom_line(alpha = 3/50, col = 2) +
+  labs(x = "OssificationR (ossification score)", y = "Pr(mature)",
+       title = "Prior-predictive curves (HOF: logit = w*(x - m))",
+       subtitle = "m ~ N(76, 2);  w ~ N⁺(1.2, 0.4)")
+
+
+
+```
+
+### **c) HOF model**
+
+```{stan makehof1.1, output.var="stan_hof2", cache=FALSE}
+
+functions {
+}
+data {
+  int<lower=1> n;                      // total number of observations
+  int<lower=0,upper=1> Y[n];           // response variable
+  vector[n] X;  
+  vector[n] weights;
+  real prior_mean_m ;
+  real<lower=0> prior_sd_m ;
+  real<lower=0> prior_sd_w ;
+}
+parameters {
+  real m ;                             // m = L50 = median bone score at maturity
+  real<lower=0> w ;
+  real<lower=0, upper=0.10> eps;       // NEW: small misclassification rate (0–10%)
+}
+model {
+  // --- Likelihood (ONE LINE CHANGED: wrap in log_mix) ---
+  for (i in 1:n) {
+    target += weights[i] * log_mix(                      // NEW
+                  eps,                                   // prob label is flipped
+                  bernoulli_logit_lpmf(Y[i] | -w * (X[i] - m)), // flipped
+                  bernoulli_logit_lpmf(Y[i] |  w * (X[i] - m))  // as modeled
+               );
+  }
+
+  // --- Priors (unchanged, except add eps prior) ---
+  target += normal_lpdf( m | prior_mean_m , prior_sd_m ) ;
+  target += normal_lpdf( w | 0.8 , prior_sd_w ) ;        // use your chosen mean for w
+  eps ~ beta(2, 40);                                     // NEW: weak, favors tiny error
+}
+generated quantities {
+  real log_lik[n] ;
+  for (i in 1:n) {
+    // Match the model for LOO: same log_mix as above           // NEW
+    log_lik[i] = weights[i] * log_mix(
+                    eps,
+                    bernoulli_logit_lpmf(Y[i] | -w * (X[i] - m)),
+                    bernoulli_logit_lpmf(Y[i] |  w * (X[i] - m))
+                 );
+  }
+}
+
+
+```
+
+```{r fit_F_total1.1}
+
+
+fit_F_total_data <- SexualmaturityF_total %>%
+  select(Y = Maturity, X = OssificationR, row_id) %>%
+  add_column(weights = 1)
+
+# ✅ Save row_id mapping before Stan eats it
+row_ids_used <- fit_F_total_data$row_id
+
+fit_F_total <- fit_F_total_data %>%
+  compose_data() %>%
+  list_modify(
+    prior_mean_m = 76,
+    prior_sd_m   = 2,
+    prior_mean_w = 0.8,
+    prior_sd_w   = 0.2,
+    n_pred = x_len,
+    X_pred = seq_range(SexualmaturityF_total$OssificationR, x_len)
+  ) %>%
+  sampling(
+    stan_hof2, 
+    data = .,
+    iter = 10000,
+    chains = 4,
+    cores = 4,
+    seed = 123, 
+    thin = 5,
+    control = list(adapt_delta = 0.95)
+  )
+
+
+```
+
+
+### **d) Loo**
+
+```{r loo_fit_F_total1.1}
+loo_fit_F_total <- loo(fit_F_total,reloo=T)
+pareto_k_table(loo_fit_F_total)
+plot(loo_fit_F_total)
+
+
+bad_ids <- pareto_k_ids(loo_fit_F_total)  # These are indices in the model data
+offending_rows <- row_ids_used[bad_ids]  # Match to original data rows
+SexualmaturityF_total %>% filter(row_id %in% offending_rows)
+
+library(tidybayes)
+
+posterior <- spread_draws(fit_F_total, m, w)
+X_bad <- fit_F_total_data$X[bad_ids]
+
+# For each bad X value, get predicted p across all posterior draws
+preds <- lapply(X_bad, function(x) {
+  posterior %>%
+    mutate(p = plogis(w * (x - m))) %>%
+    pull(p)
+})
+summary_stats <- sapply(preds, function(p) quantile(p, probs = c(0.025, 0.5, 0.975)))
+
+summary_stats
+
+
+print(summary_stats)
+
+
+# 1) Per-observation log predictive density (elpd_i)
+pw   <- loo_fit_F_total$pointwise           # matrix with columns incl. "elpd_loo"
+elpd <- as.numeric(pw[, "elpd_loo"])        # vector of per-obs log predictive densities
+
+# 2) Bundle with data to see which point is which
+dens_tbl <- tibble::tibble(
+  i   = seq_along(elpd),
+  X   = fit_F_total_data$X,
+  Y   = fit_F_total_data$Y,
+  k   = loo_fit_F_total$diagnostics$pareto_k,
+  elpd = elpd
+)
+
+# View all (or filter to interesting cases)
+dens_tbl
+# Example: only high-k points (if any existed)
+dplyr::filter(dens_tbl, k > 0.7)
+
+# 3) Totals (model-level)
+ELPD_total <- loo_fit_F_total$estimates["elpd_loo","Estimate"]
+ELPD_se    <- loo_fit_F_total$estimates["elpd_loo","SE"]
+ELPD_total; ELPD_se
+
+
+```
+
+High Pareto k values were observed for very immature animals, where the model assigned extremely low probability of maturity (median p \< 10⁻⁷). This overconfidence likely reflects the steep logistic slope and should be interpreted with caution.
+
+### **e) Plot**
+
+```{r plot1.1}
+
+suppressPackageStartupMessages({
+  library(ggplot2); library(dplyr); library(posterior); library(tibble)
+})
+
+plot_hof_female <- function(fit, X, Y, ndraws = 300,
+                            xlab = "Bone score", title = NULL) {
+
+  dr_all_df <- as.data.frame(posterior::as_draws_df(fit))
+  if (!all(c("m","w") %in% names(dr_all_df))) stop("Posterior must contain 'm' and 'w'.")
+
+  set.seed(1)
+  idx <- sample.int(nrow(dr_all_df), min(ndraws, nrow(dr_all_df)))
+  dr  <- dr_all_df[idx, c("m","w"), drop = FALSE]
+
+  xr <- range(X, na.rm = TRUE); xg <- seq(xr[1], xr[2], length.out = 300)
+
+  curves <- lapply(seq_len(nrow(dr)), function(i) {
+    tibble(draw = i, x = xg, p = plogis(dr$w[i] * (xg - dr$m[i])))
+  }) |> dplyr::bind_rows()
+
+  m_med <- stats::median(dr_all_df$m)
+  w_med <- stats::median(dr_all_df$w)
+  m_ci  <- stats::quantile(dr_all_df$m, probs = c(0.025, 0.975), na.rm = TRUE)
+  width_10_90 <- 4.4 / w_med
+
+  x_left_end    <- max(xr[1], m_med - width_10_90)
+  x_OssificationR_start <- min(xr[2], m_med + width_10_90)
+
+  col_mature   <- "#006400" # dark green
+  col_immature <- "#98FB98" # pale green
+  df <- tibble(x = X, y = Y, col = ifelse(Y == 1, col_mature, col_immature))
+
+  ggplot() +
+    geom_line(data = curves, aes(x, p, group = draw), colour = "grey30", alpha = 0.15, linewidth = 0.5) +
+    geom_segment(aes(x = xr[1], xend = x_left_end, y = 0, yend = 0), linewidth = 0.7) +
+    geom_segment(aes(x = x_OssificationR_start, xend = xr[2], y = 1, yend = 1), linewidth = 0.7) +
+    geom_jitter(data = df, aes(x, y), colour = df$col, width = 0, height = 0.02, alpha = 0.9, size = 3) +
+    geom_point(aes(x = m_med, y = 0.5), colour = "#FFC000", fill = "#FFC000", shape = 23, size = 3, stroke = 0.8) +
+    geom_errorbarh(aes(y = 0.5, xmin = m_ci[1], xmax = m_ci[2]), height = 0.02, colour = "#FFC000", linewidth = 0.8) +
+    annotate("text", x = xr[1] + 0.1 * diff(xr), y = 0.08, label = "Immature", size = 4) +
+    annotate("text", x = xr[2] - 0.1 * diff(xr), y = 0.92, label = "Mature", size = 4) +
+    coord_cartesian(ylim = c(0, 1)) +
+    labs(x = xlab, y = "Probability of maturity", title = title) +
+    theme_bw(base_size = 16) +   # increase base font size
+  theme(
+    axis.title = element_text(size = 18),   # axis labels
+    axis.text  = element_text(size = 14),   # axis ticks
+    plot.title = element_text(size = 20, face = "bold"),  # title
+    legend.text = element_text(size = 14)   # in case legend is on
+  )
+}
+
+p_f_total <- plot_hof_female(
+  fit  = fit_F_total,
+  X    = SexualmaturityF_total$OssificationR,
+  Y    = SexualmaturityF_total$Maturity,
+  xlab = "Total bone score",
+  title = "Females — total bone score"
+)
+
+
+ggsave("hof_female_total.png", p_f_total,
+       path  = "C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 5. Sexual maturity in relation to bone age/Statistical analysis/Final",
+       width = 7, height = 5, dpi = 300)
+p_f_total
+
+
+
+
+```
+
+```{r precis_fit_F_total1.1}
+print(fit_F_total, probs = c(0.025, 0.975))
+
+```
+
+
+## **1.2. Males**
+
+Using sexual maturity coded as 0 = immature, 1 = mature
+
+### **a) Data preparation
+
+```{r data prep1.2, results='hide', message=FALSE}
+
+library(readxl)
+library(dplyr)
+library(stringr)
+# Load
+path <- "C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 4 Bone age/Statistical analysis/5. Scores for the whole data set.xlsx"
+raw <- read_excel(path, sheet = "Males_Aging")
+
+# Clean + coerce types robustly, drop NA-like values
+SexualMaturityM_total <- raw %>%
+  # Trim any stray spaces in headers
+  rename_with(trimws) %>%
+  # Coerce 'OssificationR' to numeric from ANY form (numeric/character/factor/date/with % or commas)
+  mutate(
+    OssificationR = as.character(OssificationR),
+    OssificationR = str_replace_all(OssificationR, ",", "."),
+    OssificationR = str_replace_all(OssificationR, "[^0-9.\\-]", ""),   # keep digits, dot, minus
+    OssificationR = na_if(trimws(OssificationR), ""),
+    OssificationR = as.numeric(OssificationR),
+
+    # Normalise Maturity to 0/1 from various codings (0/1, yes/no, mature/immature, etc.)
+    Maturity_chr = tolower(trimws(as.character(Maturity))),
+    Maturity = case_when(
+      Maturity_chr %in% c("1","yes","true","adult","mature") ~ 1L,
+      Maturity_chr %in% c("0","no","false","immature","imm") ~ 0L,
+      TRUE ~ NA_integer_
+    )
+  ) %>%
+  # Now drop the rows with missing OssificationR (and optionally missing Maturity)
+  filter(!is.na(OssificationR)) %>%
+  filter(OssificationR >= 30, OssificationR <= 100) %>%
+  filter(!is.na(Maturity)) %>%      # <- include if you require Maturity to be present
+  mutate(row_id = row_number()) %>%
+  select(-Maturity_chr)
+
+# Counts
+n_0_M_Total <- sum(SexualMaturityM_total$Maturity == 0, na.rm = TRUE)
+n_1_M_Total <- sum(SexualMaturityM_total$Maturity == 1, na.rm = TRUE)
+
+# Quick sanity checks
+cat("Rows kept:", nrow(SexualMaturityM_total), "\n")
+summary(SexualMaturityM_total$OssificationR)
+table(SexualMaturityM_total$Maturity, useNA = "ifany")
+
+
+```
+
+**Display data:**
+
+```{r datadisplay1.2}
+
+x_len = 501
+n_draws = 200
+llow = min(SexualMaturityM_total$OssificationR) %>% floor
+lhigh = max(SexualMaturityM_total$OssificationR) %>% ceiling
+
+
+SexualMaturityM_total <- SexualMaturityM_total %>%
+  mutate(Sex = factor(dplyr::recode(as.character(Sex),
+                                    "F" = "Female",
+                                    "M" = "Male")))
+
+ggplot() +
+  geom_jitter(
+    aes(y = Maturity, x = OssificationR, colour = Sex, shape = Sex), 
+    data = SexualMaturityM_total,
+    size = 1.5, alpha = 0.5, width = 0, height = 0.02
+  ) +
+  scale_colour_manual(values = c("Female" = "#FF0000", "Male" = "#1E90FF")) + 
+  scale_shape_manual(values = c("Female" = 1, "Male" = 2)) +
+  scale_x_continuous(breaks = seq(0, max(SexualMaturityM_total$OssificationR, na.rm = TRUE), by = 10))
+
+```
+
+### **b) Predictive prior test*
+
+
+```{r predictivepriortest1.2}
+
+
+sim_hof2 <- function(x, m, w) {
+  eta = w * (x - m)
+  inv.logit(eta)
+}
+
+nsim <- 500
+
+expand_grid( 
+  x = 30:100,  # updated to match your data range
+  data.frame(
+    m = rnorm(nsim, mean = 70, sd = 3),         # broader but realistic midpoints
+    w = abs(rnorm(nsim, mean = 0.40, sd = 0.1)), # realistic slope steepness
+    group = 1:nsim
+  )
+) %>%
+  mutate(p = sim_hof2(x = x, m = m, w = w)) %>%
+  ggplot() +
+  aes(x = x, y = p, group = group) +
+  geom_line(alpha = 3/50, col = 2)
+
+
+
+
+```
+
+### **c) HOF model**
+
+```{stan make_hof1.2, output.var="stan_hof2", cache=FALSE}
+
+functions {
+}
+data {
+  int<lower=1> n;                      // total number of observations
+  int<lower=0,upper=1> Y[n];           // response variable
+  vector[n] X;  
+  vector[n] weights;
+  real prior_mean_m ;
+  real<lower=0> prior_sd_m ;
+  real<lower=0> prior_sd_w ;
+}
+parameters {
+  real m ;                             // m = L50 = median bone score at maturity
+  real<lower=0> w ;
+  real<lower=0, upper=0.10> eps;       // NEW: small misclassification rate (0–10%)
+}
+model {
+  // --- Likelihood (ONE LINE CHANGED: wrap in log_mix) ---
+  for (i in 1:n) {
+    target += weights[i] * log_mix(                      // NEW
+                  eps,                                   // prob label is flipped
+                  bernoulli_logit_lpmf(Y[i] | -w * (X[i] - m)), // flipped
+                  bernoulli_logit_lpmf(Y[i] |  w * (X[i] - m))  // as modeled
+               );
+  }
+
+  // --- Priors (unchanged, except add eps prior) ---
+  target += normal_lpdf( m | prior_mean_m , prior_sd_m ) ;
+  target += normal_lpdf( w | 0.4 , prior_sd_w ) ;        // use your chosen mean for w
+  eps ~ beta(2, 40);                                     // NEW: weak, favors tiny error
+}
+generated quantities {
+  real log_lik[n] ;
+  for (i in 1:n) {
+    // Match the model for LOO: same log_mix as above           // NEW
+    log_lik[i] = weights[i] * log_mix(
+                    eps,
+                    bernoulli_logit_lpmf(Y[i] | -w * (X[i] - m)),
+                    bernoulli_logit_lpmf(Y[i] |  w * (X[i] - m))
+                 );
+  }
+}
+
+
+```
+
+```{r fit_M_total1.2}
+
+
+fit_M_total_data <- SexualMaturityM_total %>%
+  select(Y = Maturity, X = OssificationR, row_id) %>%
+  add_column(weights = 1)
+
+# ✅ Save row_id mapping before Stan eats it
+row_ids_used <- fit_M_total_data$row_id
+
+fit_M_total <- fit_M_total_data %>%
+  compose_data() %>%
+  list_modify(
+    prior_mean_m = 70,
+    prior_sd_m   = 3,
+    prior_mean_w = 0.40,
+    prior_sd_w   = 0.1,
+    n_pred = x_len,
+    X_pred = seq_range(SexualMaturityM_total$OssificationR, x_len)
+  ) %>%
+  sampling(
+    stan_hof2, 
+    data = .,
+    iter = 10000,
+    chains = 4,
+    cores = 4,
+    seed = 123, 
+    thin = 5,
+    control = list(adapt_delta = 0.95)
+  )
+
+
+```
+
+```{r precis_fit_M_total1.2}
+print(fit_M_total, probs = c(0.025, 0.975))
+
+```
+
+
+
+
+### **d) Loo**
+
+```{r loo_fit_M_total1.2}
+loo_fit_M_total <- loo(fit_M_total,reloo=T)
+pareto_k_table(loo_fit_M_total)
+plot(loo_fit_M_total)
+
+
+bad_ids <- pareto_k_ids(loo_fit_M_total)  # These are indices in the model data
+offending_rows <- row_ids_used[bad_ids]  # Match to original data rows
+SexualMaturityM_total %>% filter(row_id %in% offending_rows)
+
+library(tidybayes)
+
+posterior <- spread_draws(fit_M_total, m, w)
+X_bad <- fit_M_total_data$X[bad_ids]
+
+# For each bad X value, get predicted p across all posterior draws
+preds <- lapply(X_bad, function(x) {
+  posterior %>%
+    mutate(p = plogis(w * (x - m))) %>%
+    pull(p)
+})
+summary_stats <- sapply(preds, function(p) quantile(p, probs = c(0.025, 0.5, 0.975)))
+
+summary_stats
+
+
+print(summary_stats)
+
+
+# 1) Per-observation log predictive density (elpd_i)
+pw   <- loo_fit_M_total$pointwise           # matrix with columns incl. "elpd_loo"
+elpd <- as.numeric(pw[, "elpd_loo"])        # vector of per-obs log predictive densities
+
+# 2) Bundle with data to see which point is which
+dens_tbl <- tibble::tibble(
+  i   = seq_along(elpd),
+  X   = fit_M_total_data$X,
+  Y   = fit_M_total_data$Y,
+  k   = loo_fit_M_total$diagnostics$pareto_k,
+  elpd = elpd
+)
+
+# View all (or filter to interesting cases)
+dens_tbl
+# Example: only high-k points (if any existed)
+dplyr::filter(dens_tbl, k > 0.7)
+
+# 3) Totals (model-level)
+ELPD_total <- loo_fit_M_total$estimates["elpd_loo","Estimate"]
+ELPD_se    <- loo_fit_M_total$estimates["elpd_loo","SE"]
+ELPD_total; ELPD_se
+
+```
+
+### **e) Plot**
+
+```{r plot1.2}
+
+suppressPackageStartupMessages({
+  library(ggplot2); library(dplyr); library(posterior); library(tibble)
+})
+
+dr_all_df <- as.data.frame(posterior::as_draws_df(fit_M_total))
+stopifnot(all(c("m","w") %in% names(dr_all_df)))
+set.seed(1)
+idx <- sample.int(nrow(dr_all_df), min(300, nrow(dr_all_df)))
+dr  <- dr_all_df[idx, c("m","w"), drop = FALSE]
+
+xr <- range(SexualMaturityM_total$OssificationR, na.rm = TRUE)
+xg <- seq(xr[1], xr[2], length.out = 300)
+curves <- lapply(seq_len(nrow(dr)), function(i) {
+  tibble(draw = i, x = xg, p = plogis(dr$w[i] * (xg - dr$m[i])))
+}) |> bind_rows()
+
+m_med <- median(dr_all_df$m); w_med <- median(dr_all_df$w)
+m_ci  <- quantile(dr_all_df$m, probs = c(0.025, 0.975), na.rm = TRUE)
+width_10_90 <- 4.4 / w_med
+x_left_end    <- max(xr[1], m_med - width_10_90)
+x_OssificationR_start <- min(xr[2], m_med + width_10_90)
+
+col_mature   <- "#084594"  # dark blue
+col_immature <- "#87CEEB"  # pale blue
+df <- tibble(x = SexualMaturityM_total$OssificationR,
+             y = SexualMaturityM_total$Maturity,
+             col = ifelse(SexualMaturityM_total$Maturity == 1, col_mature, col_immature))
+
+p_m_total <- ggplot() +
+  geom_line(data = curves, aes(x, p, group = draw), colour = "grey30", alpha = 0.15, linewidth = 0.5) +
+  geom_segment(aes(x = xr[1], xend = x_left_end, y = 0, yend = 0), linewidth = 0.7) +
+  geom_segment(aes(x = x_OssificationR_start, xend = xr[2], y = 1, yend = 1), linewidth = 0.7) +
+  geom_jitter(data = df, aes(x, y), colour = df$col, fill = NA, width = 0, height = 0.02, size = 3, alpha = 0.9) +
+  geom_point(aes(x = m_med, y = 0.5), colour = "#FFC000", fill = "#FFC000", shape = 23, size = 3, stroke = 0.8) +
+  geom_errorbarh(aes(y = 0.5, xmin = m_ci[1], xmax = m_ci[2]), height = 0.02, colour = "#FFC000", linewidth = 0.8) +
+  annotate("text", x = xr[1] + 0.1 * diff(xr), y = 0.08, label = "Immature", size = 4) +
+  annotate("text", x = xr[2] - 0.1 * diff(xr), y = 0.92, label = "Mature", size = 4) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(x = "Total bone score", y = "Probability of maturity", title = "Males — total bone score") +
+  theme_bw(base_size = 16) +   # increase base font size
+  theme(
+    axis.title = element_text(size = 18),   # axis labels
+    axis.text  = element_text(size = 14),   # axis ticks
+    plot.title = element_text(size = 20, face = "bold"),  # title
+    legend.text = element_text(size = 14)   # in case legend is on
+  )
+
+
+ggsave("hof_male_total.png", p_m_total,
+       path  = "C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 5. Sexual maturity in relation to bone age/Statistical analysis/Final",
+       width = 7, height = 5, dpi = 300)
+p_m_total
+
+
+```
+
+
+## **1.3. Sex differences in midpoint (L50) and slope — Total bone score**
+
+```{r sex-diff-total1.3., message=FALSE, warning=FALSE}
+suppressPackageStartupMessages({
+  library(dplyr); library(posterior); library(ggplot2); library(knitr)
+})
+
+# EXACT object names
+m_f <- posterior::as_draws_df(fit_F_total)$m
+w_f <- posterior::as_draws_df(fit_F_total)$w
+m_m <- posterior::as_draws_df(fit_M_total)$m
+w_m <- posterior::as_draws_df(fit_M_total)$w
+
+# Differences (female – male)
+m_diff <- m_f - m_m
+w_diff <- w_f - w_m
+
+summ <- function(x) {
+  qs <- quantile(x, c(0.025, 0.5, 0.975))
+  data.frame(
+    mean   = mean(x),
+    sd     = sd(x),
+    q2.5   = qs[1],
+    q50    = qs[2],
+    q97.5  = qs[3],
+    p_gt0  = mean(x > 0),
+    p_lt0  = mean(x < 0)
+  )
+}
+
+tab_total <- bind_rows(
+  summ(m_diff) %>% mutate(parameter = "m (midpoint, female - male)"),
+  summ(w_diff) %>% mutate(parameter = "w (slope, female - male)")
+) %>% relocate(parameter)
+
+kable(tab_total, digits = 3,
+      caption = "TOTAL score — Posterior differences by sex (female – male): mean, SD, 95% CrI, and tail probabilities")
+
+# Optional quick plot (delete if not needed)
+df_plot <- tibble::tibble(
+  value = c(as.numeric(m_diff), as.numeric(w_diff)),
+  param = rep(c("midpoint (m)", "slope (w)"),
+              times = c(length(m_diff), length(w_diff)))
+)
+
+ggplot(df_plot, aes(x = value)) +
+  geom_density() +
+  geom_vline(xintercept = 0, linetype = 2) +
+  facet_wrap(~ param, scales = "free") +
+  labs(x = "Female - Male", y = "Density",
+       title = "Posterior differences (female - male): TOTAL score") +
+  theme_classic()
+```
+
+
+# **2. Minimum score of radius and ulna
+
+## **2.1. Females **
+
+###**a) Data preparation
+
+```{r dataprep2.1, results='hide', message=FALSE}
+
+rm(list = ls())
+
+
+X5_Scores_for_the_whole_data_set <- read_excel("C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 4 Bone age/Statistical analysis/5. Scores for the whole data set.xlsx", 
+                                               sheet = "Females_Aging")
+View(X5_Scores_for_the_whole_data_set)  
+
+SexualMaturityF_URM <- X5_Scores_for_the_whole_data_set   
+
+rm(X5_Scores_for_the_whole_data_set)    
+
+
+SexualMaturityF_URM <- SexualMaturityF_URM %>%
+  mutate(row_id = row_number()) %>%
+  filter(!is.na(Radius_Ulna_Min)) %>%
+  mutate(Maturity = ifelse(Maturity == 1, 1, 0))
+
+
+
+n_0_URM <- sum(SexualMaturityF_URM$Maturity == 0)
+n_1_URM <- sum(SexualMaturityF_URM$Maturity == 1)
+
+
+```
+
+**Display data:**
+
+```{r datadisplay2.1}
+
+x_len = 80
+n_draws = 200
+llow = min(SexualMaturityF_URM$Radius_Ulna_Min) %>% floor
+lhigh = max(SexualMaturityF_URM$Radius_Ulna_Min) %>% ceiling
+
+
+SexualMaturityF_URM <- SexualMaturityF_URM %>%
+  mutate(Sex = factor(dplyr::recode(as.character(Sex),
+                                    "F" = "Female",
+                                    "M" = "Male")))
+
+ggplot() +
+  geom_jitter(
+    aes(y = Maturity, x = Radius_Ulna_Min, colour = Sex, shape = Sex), 
+    data = SexualMaturityF_URM,
+    size = 1.5, alpha = 0.5, width = 0, height = 0.02
+  ) +
+  scale_colour_manual(values = c("Female" = "#FF0000", "Male" = "#1E90FF")) + 
+  scale_shape_manual(values = c("Female" = 1, "Male" = 2)) +
+  scale_x_continuous(breaks = seq(0, max(SexualMaturityF_URM$Radius_Ulna_Min, na.rm = TRUE), by = 1))
+
+```
+
+### **b) Predictive prior test**
+
+
+
+```{r predictivepriortest2.1.}
+
+
+sim_hof2 <- function(x, m, w) {
+  eta = w * (x - m)
+  inv.logit(eta)
+}
+
+nsim <- 500
+
+expand_grid( 
+  x = seq(0, 8.5, length.out = 200),  # smoother and includes full range
+  data.frame(
+    m = rnorm(nsim, mean = 5, sd = 0.2),        # inflection points around 5
+    w = abs(rnorm(nsim, mean = 2, sd = 0.2)),   # slopes centered around 2
+    group = 1:nsim
+  )
+) %>%
+  mutate(p = sim_hof2(x = x, m = m, w = w)) %>%
+  ggplot() +
+  aes(x = x, y = p, group = group) +
+  geom_line(alpha = 3/50, col = 2) +
+  theme_minimal()
+
+```
+
+### **c) HOF model**
+
+```{stan make_hof2.1, output.var="stan_hof2", cache=FALSE}
+
+functions {
+  // No custom functions needed
+}
+data {
+  int<lower=1> n;                      // number of observations
+  int<lower=0,upper=1> Y[n];           // binary outcome
+  vector[n] X;                         // predictor (e.g. Radius_Ulna_Min)
+  vector[n] weights;                  // observation weights
+  real prior_mean_m;                  // prior mean for m (inflection)
+  real<lower=0> prior_sd_m;           // prior sd for m
+  real<lower=0> prior_mean_w;         // NEW: prior mean for w
+  real<lower=0> prior_sd_w;           // prior sd for w
+}
+parameters {
+  real m;                             // inflection point
+  real<lower=0> w;                    // slope (constrained positive)
+}
+model {
+  // Likelihood
+  for (i in 1:n) {
+    target += weights[i] * bernoulli_logit_lpmf(Y[i] | w * (X[i] - m));
+  }
+
+  // Priors
+  m ~ normal(prior_mean_m, prior_sd_m);              
+  w ~ normal(prior_mean_w, prior_sd_w);              
+}
+generated quantities {
+  real log_lik[n];
+  for (i in 1:n) {
+    log_lik[i] = weights[i] * bernoulli_logit_lpmf(Y[i] | w * (X[i] - m));
+  }
+}
+
+
+```
+
+```{r fit_F_URM2.1}
+
+
+fit_F_URM_data <- SexualMaturityF_URM %>%
+  select(Y = Maturity, X = Radius_Ulna_Min, row_id) %>%
+  add_column(weights = 1)
+
+# ✅ Save row_id mapping before Stan eats it
+row_ids_used <- fit_F_URM_data$row_id
+
+# Adjust x_len as appropriate — e.g. 100
+x_len <- 8.5 
+
+fit_F_URM <- fit_F_URM_data %>%
+  compose_data() %>%
+  list_modify(
+    prior_mean_m = 5,         # midpoint prior (inflection at ~5)
+    prior_sd_m   = 0.5,       # narrow spread (seen clearly in data)
+    prior_mean_w = 2,         # moderate slope
+    prior_sd_w   = 0.5,       # avoids both flat and extreme curves
+    n_pred       = x_len,
+    X_pred       = seq_range(SexualMaturityF_URM$Radius_Ulna_Min, x_len)
+  ) %>%
+  sampling(
+    stan_hof2, 
+    data = .,
+    iter = 10000,
+    chains = 4,
+    cores = 4,
+    seed = 123, 
+    thin = 5,
+    control = list(adapt_delta = 0.95)
+  )
+
+
+```
+
+```{r precis_fit_F_URM2.1}
+print(fit_F_URM, probs = c(0.025, 0.975))
+
+```
+
+
+
+
+High Pareto k values were observed for very immature animals, where the model assigned extremely low probability of maturity (median p \< 10⁻⁷). This overconfidence likely reflects the steep logistic slope and should be interpreted with caution.
+
+### **d) Loo**
+
+```{r loo_fit_F_URM2.1}
+loo_fit_F_URM <- loo(fit_F_URM,reloo=T)
+pareto_k_table(loo_fit_F_URM)
+plot(loo_fit_F_URM)
+
+bad_ids <- pareto_k_ids(loo_fit_F_URM)  # These are indices in the model data
+offending_rows <- row_ids_used[bad_ids]  # Match to original data rows
+SexualMaturityF_URM %>% filter(row_id %in% offending_rows)
+
+library(tidybayes)
+
+posterior <- spread_draws(fit_F_URM, m, w)
+X_bad <- fit_F_URM_data$X[bad_ids]
+
+
+# For each bad X value, get predicted p across all posterior draws
+preds <- lapply(X_bad, function(x) {
+  posterior %>%
+    mutate(p = plogis(w * (x - m))) %>%
+    pull(p)
+})
+summary_stats <- sapply(preds, function(p) quantile(p, probs = c(0.025, 0.5, 0.975)))
+
+summary_stats
+
+
+print(summary_stats)
+
+
+
+# 1) Per-observation log predictive density (elpd_i)
+pw   <- loo_fit_F_URM$pointwise           # matrix with columns incl. "elpd_loo"
+elpd <- as.numeric(pw[, "elpd_loo"])        # vector of per-obs log predictive densities
+
+# 2) Bundle with data to see which point is which
+dens_tbl <- tibble::tibble(
+  i   = seq_along(elpd),
+  X   = fit_F_URM_data$X,
+  Y   = fit_F_URM_data$Y,
+  k   = loo_fit_F_URM$diagnostics$pareto_k,
+  elpd = elpd
+)
+
+# View all (or filter to interesting cases)
+dens_tbl
+# Example: only high-k points (if any existed)
+dplyr::filter(dens_tbl, k > 0.7)
+
+# 3) Totals (model-level)
+ELPD_total <- loo_fit_F_URM$estimates["elpd_loo","Estimate"]
+ELPD_se    <- loo_fit_F_URM$estimates["elpd_loo","SE"]
+ELPD_total; ELPD_se
+
+```
+
+High Pareto k values were observed for very immature animals, where the model assigned extremely low probability of maturity (median p < 10⁻⁷). This overconfidence likely reflects the steep logistic slope and should be interpreted with caution.
+
+### **e) Plot**
+
+```{r plot2.1}
+
+suppressPackageStartupMessages({
+  library(ggplot2); library(dplyr); library(posterior); library(tibble)
+})
+
+dr_all_df <- as.data.frame(posterior::as_draws_df(fit_F_URM))
+stopifnot(all(c("m","w") %in% names(dr_all_df)))
+set.seed(1); idx <- sample.int(nrow(dr_all_df), min(300, nrow(dr_all_df)))
+dr  <- dr_all_df[idx, c("m","w"), drop = FALSE]
+
+xr <- range(SexualMaturityF_URM$Radius_Ulna_Min, na.rm = TRUE)
+xg <- seq(xr[1], xr[2], length.out = 300)
+curves <- lapply(seq_len(nrow(dr)), function(i) {
+  tibble(draw = i, x = xg, p = plogis(dr$w[i] * (xg - dr$m[i])))
+}) |> bind_rows()
+
+m_med <- median(dr_all_df$m); w_med <- median(dr_all_df$w)
+m_ci  <- quantile(dr_all_df$m, probs = c(0.025, 0.975))
+width_10_90 <- 4.4 / w_med
+x_left_end <- max(xr[1], m_med - width_10_90); x_Radius_Ulna_min_start <- min(xr[2], m_med + width_10_90)
+
+df <- tibble(x = SexualMaturityF_URM$Radius_Ulna_Min, y = SexualMaturityF_URM$Maturity,
+             col = ifelse(SexualMaturityF_URM$Maturity == 1, "#006400", "#98FB98"))
+
+
+p_f_Radius_Ulna_Min <- ggplot() +
+  geom_line(data = curves, aes(x, p, group = draw), colour="grey30", alpha=0.15) +
+  geom_segment(aes(x = xr[1], xend=x_left_end, y=0, yend=0)) +
+  geom_segment(aes(x = x_Radius_Ulna_min_start, xend=xr[2], y=1, yend=1)) +
+  geom_jitter(data=df, aes(x,y), colour=df$col,fill = NA, width=0, height=0.02, size=3, alpha=0.9) +
+  geom_point(aes(x = m_med, y = 0.5), colour = "#FFC000", fill = "#FFC000", shape = 23, size = 3, stroke = 0.8) +
+  geom_errorbarh(aes(y = 0.5, xmin = m_ci[1], xmax = m_ci[2]), height = 0.02, colour = "#FFC000", linewidth = 0.8) +
+  annotate("text", x=xr[1]+0.1*diff(xr), y=0.08, label="Immature") +
+  annotate("text", x=xr[2]-0.1*diff(xr), y=0.92, label="Mature") +
+  coord_cartesian(ylim=c(0,1)) +
+  labs(x="Minimum score of radius and ulna", y="Probability of maturity", title="Females — Score of radius and ulna") +
+ theme_bw(base_size = 16) +   # increase base font size
+  theme(
+    axis.title = element_text(size = 18),   # axis labels
+    axis.text  = element_text(size = 14),   # axis ticks
+    plot.title = element_text(size = 20, face = "bold"),  # title
+    legend.text = element_text(size = 14)   # in case legend is on
+  )
+
+
+
+ggsave("hof_female_Radius_Ulna_Min.png", p_f_Radius_Ulna_Min,
+       path  = "C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 5. Sexual maturity in relation to bone age/Statistical analysis/Final",
+       width = 7, height = 5, dpi = 300)
+p_f_Radius_Ulna_Min
+
+
+```
+
+## **2.2. Males **
+
+
+### **a) Data preparation
+
+```{r dataprep2.2, results='hide', message=FALSE}
+
+
+X5_Scores_for_the_whole_data_set <- read_excel("C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 4 Bone age/Statistical analysis/5. Scores for the whole data set.xlsx", 
+                                               sheet = "Males_Aging")
+View(X5_Scores_for_the_whole_data_set)  
+
+SexualMaturityM_URM <- X5_Scores_for_the_whole_data_set   
+
+rm(X5_Scores_for_the_whole_data_set)    
+
+
+SexualMaturityM_URM <- SexualMaturityM_URM %>%
+  mutate(row_id = row_number()) %>%
+  filter(!is.na(Radius_Ulna_Min)) %>%
+  filter(Maturity != "ND") %>%                      # 🔍 Filter out ND entries
+  mutate(Maturity = ifelse(Maturity == 1, 1, 0))     # Convert to binary 0/1 
+
+
+n_0_M_URM <- sum(SexualMaturityM_URM$Maturity == 0)
+n_1_M_URM <- sum(SexualMaturityM_URM$Maturity == 1)
+
+
+```
+
+**Display data:**
+
+```{r datadisplay2.2}
+
+x_len = 80
+n_draws = 200
+llow = min(SexualMaturityM_URM$Radius_Ulna_Min) %>% floor
+lhigh = max(SexualMaturityM_URM$Radius_Ulna_Min) %>% ceiling
+
+
+SexualMaturityM_URM <- SexualMaturityM_URM %>%
+  mutate(Sex = factor(dplyr::recode(as.character(Sex),
+                                    "F" = "Female",
+                                    "M" = "Male")))
+
+ggplot() +
+  geom_jitter(
+    aes(y = Maturity, x = Radius_Ulna_Min, colour = Sex, shape = Sex), 
+    data = SexualMaturityM_URM,
+    size = 1.5, alpha = 0.5, width = 0, height = 0.02
+  ) +
+  scale_colour_manual(values = c("Female" = "#FF0000", "Male" = "#1E90FF")) + 
+  scale_shape_manual(values = c("Female" = 1, "Male" = 2)) +
+  scale_x_continuous(breaks = seq(0, max(SexualMaturityM_URM$Radius_Ulna_Min, na.rm = TRUE), by = 1))
+
+```
+
+### **b) Predictive prior test**
+
+The priors were chosen based on the observed data range and biological expectations of male maturity. The Radius_Ulna_Min variable ranges from 0 to 8, with the transition from immature (0) to mature (1) occurring primarily between values of \~4.5 and 6. Accordingly, the prior for the inflection point 𝑚 m — where the probability of maturity is 50% — is centered at 5.2 with a standard deviation of 0.5 to reflect realistic variation across individuals. The slope parameter 𝑤 w, which governs how sharply maturity increases with size, is drawn from a half-normal distribution centered at 2.2 (with SD = 0.5), ensuring biologically plausible but flexible transition curves without allowing flat or overly sharp jumps.
+
+```{r predictivepriortest2.2}
+
+
+sim_hof2 <- function(x, m, w) {
+  eta = w * (x - m)
+  inv.logit(eta)
+}
+
+nsim <- 500
+
+expand_grid( 
+  x = seq(0, 8, length.out = 80),  # actual data range for Radius_Ulna_Min
+  data.frame(
+    m = rnorm(nsim, mean = 5, sd = 0.5),        # inflection point around observed shift
+    w = abs(rnorm(nsim, mean = 2.2, sd = 0.2)),   # moderate slope, biologically realistic
+    group = 1:nsim
+  )
+) %>%
+  mutate(p = sim_hof2(x = x, m = m, w = w)) %>%
+  ggplot() +
+  aes(x = x, y = p, group = group) +
+  geom_line(alpha = 3/50, col = 2) +
+  theme_minimal() +
+  labs(x = "Radius_Ulna_Min", y = "P(Maturity)", title = "Simulated maturity curves (Male)")
+
+
+
+```
+
+### **c) HOF model**
+
+```{stan make_hof2.2, output.var="stan_hof2", cache=FALSE}
+
+functions {
+  // No custom functions needed
+}
+data {
+  int<lower=1> n;                      // number of observations
+  int<lower=0,upper=1> Y[n];           // binary outcome
+  vector[n] X;                         // predictor (e.g. Radius_Ulna_Min)
+  vector[n] weights;                  // observation weights
+  real prior_mean_m;                  // prior mean for m (inflection)
+  real<lower=0> prior_sd_m;           // prior sd for m
+  real<lower=0> prior_mean_w;         // NEW: prior mean for w
+  real<lower=0> prior_sd_w;           // prior sd for w
+}
+parameters {
+  real m;                             // inflection point
+  real<lower=0> w;                    // slope (constrained positive)
+}
+model {
+  // Likelihood
+  for (i in 1:n) {
+    target += weights[i] * bernoulli_logit_lpmf(Y[i] | w * (X[i] - m));
+  }
+
+  // Priors
+  m ~ normal(prior_mean_m, prior_sd_m);              
+  w ~ normal(prior_mean_w, prior_sd_w);              
+}
+generated quantities {
+  real log_lik[n];
+  for (i in 1:n) {
+    log_lik[i] = weights[i] * bernoulli_logit_lpmf(Y[i] | w * (X[i] - m));
+  }
+}
+
+
+
+```
+
+```{r fit_M_URM2.2}
+
+
+fit_M_URM_data <- SexualMaturityM_URM %>%
+  select(Y = Maturity, X = Radius_Ulna_Min, row_id) %>%
+  add_column(weights = 1)
+
+# ✅ Save row_id mapping before Stan eats it
+row_ids_used <- fit_M_URM_data$row_id
+
+x_len <- 100  # Define if not already set
+
+fit_M_URM <- fit_M_URM_data %>%
+  compose_data() %>%
+  list_modify(
+    prior_mean_m = 5,
+    prior_sd_m   = 0.5,
+    prior_mean_w = 2.2,
+    prior_sd_w   = 0.2,
+    n_pred = x_len,
+    X_pred = seq_range(SexualMaturityM_URM$Radius_Ulna_Min, n = x_len)
+  ) %>%
+  sampling(
+    stan_hof2, 
+    data = .,
+    iter = 10000,
+    chains = 4,
+    cores = 4,
+    seed = 123, 
+    thin = 5,
+    control = list(adapt_delta = 0.95)
+  )
+
+
+
+```
+
+```{r precis_fit_M_URM2.2}
+print(fit_M_URM, probs = c(0.025, 0.975))
+
+```
+
+
+
+
+### **d) Loo**
+
+```{r loo_fit_M_URM2.2}
+loo_fit_M_URM <- loo(fit_M_URM,reloo=T)
+pareto_k_table(loo_fit_M_URM)
+plot(loo_fit_M_URM)
+
+bad_ids <- pareto_k_ids(loo_fit_M_URM)  # These are indices in the model data
+offending_rows <- row_ids_used[bad_ids]  # Match to original data rows
+SexualMaturityM_URM %>% filter(row_id %in% offending_rows)
+
+library(tidybayes)
+
+posterior <- spread_draws(fit_M_URM, m, w)
+X_bad <- fit_M_URM_data$X[bad_ids]
+
+
+# For each bad X value, get predicted p across all posterior draws
+preds <- lapply(X_bad, function(x) {
+  posterior %>%
+    mutate(p = plogis(w * (x - m))) %>%
+    pull(p)
+})
+summary_stats <- sapply(preds, function(p) quantile(p, probs = c(0.025, 0.5, 0.975)))
+
+summary_stats
+
+
+print(summary_stats)
+
+
+
+# 1) Per-observation log predictive density (elpd_i)
+pw   <- loo_fit_M_URM$pointwise           # matrix with columns incl. "elpd_loo"
+elpd <- as.numeric(pw[, "elpd_loo"])        # vector of per-obs log predictive densities
+
+# 2) Bundle with data to see which point is which
+dens_tbl <- tibble::tibble(
+  i   = seq_along(elpd),
+  X   = fit_M_URM_data$X,
+  Y   = fit_M_URM_data$Y,
+  k   = loo_fit_M_URM$diagnostics$pareto_k,
+  elpd = elpd
+)
+
+# View all (or filter to interesting cases)
+dens_tbl
+# Example: only high-k points (if any existed)
+dplyr::filter(dens_tbl, k > 0.7)
+
+# 3) Totals (model-level)
+ELPD_total <- loo_fit_M_URM$estimates["elpd_loo","Estimate"]
+ELPD_se    <- loo_fit_M_URM$estimates["elpd_loo","SE"]
+ELPD_total; ELPD_se
+
+
+
+```
+
+
+
+
+### **e) Plot**
+
+```{r plot2.2}
+
+suppressPackageStartupMessages({
+  library(ggplot2); library(dplyr); library(posterior); library(tibble)
+})
+
+dr_all_df <- as.data.frame(posterior::as_draws_df(fit_M_URM))
+stopifnot(all(c("m","w") %in% names(dr_all_df)))
+set.seed(1); idx <- sample.int(nrow(dr_all_df), min(300, nrow(dr_all_df)))
+dr  <- dr_all_df[idx, c("m","w"), drop = FALSE]
+
+xr <- range(SexualMaturityM_URM$Radius_Ulna_Min, na.rm = TRUE)
+xg <- seq(xr[1], xr[2], length.out = 300)
+curves <- lapply(seq_len(nrow(dr)), function(i) {
+  tibble(draw = i, x = xg, p = plogis(dr$w[i] * (xg - dr$m[i])))
+}) |> bind_rows()
+
+m_med <- median(dr_all_df$m); w_med <- median(dr_all_df$w)
+m_ci  <- quantile(dr_all_df$m, probs = c(0.025, 0.975))
+width_10_90 <- 4.4 / w_med
+x_left_end <- max(xr[1], m_med - width_10_90); x_Radius_Ulna_min_start <- min(xr[2], m_med + width_10_90)
+
+df <- tibble(x = SexualMaturityM_URM$Radius_Ulna_Min, y = SexualMaturityM_URM$Maturity,
+             col = ifelse(SexualMaturityM_URM$Maturity == 1, "#084594", "#87CEEB"))
+
+p_m_Radius_Ulna_Min <- ggplot() +
+  geom_line(data = curves, aes(x, p, group = draw), colour="grey30", fill = NA, alpha=0.15) +
+  geom_segment(aes(x = xr[1], xend=x_left_end, y=0, yend=0)) +
+  geom_segment(aes(x = x_Radius_Ulna_min_start, xend=xr[2], y=1, yend=1)) +
+  geom_jitter(data=df, aes(x,y), colour=df$col, width=0, height=0.02, size=3, alpha=0.9) +
+  geom_point(aes(x = m_med, y = 0.5), colour = "#FFC000", fill = "#FFC000", shape = 23, size = 3, stroke = 0.8) +
+  geom_errorbarh(aes(y = 0.5, xmin = m_ci[1], xmax = m_ci[2]), height = 0.02, colour = "#FFC000", linewidth = 0.8) +
+  annotate("text", x=xr[1]+0.1*diff(xr), y=0.08, label="Immature") +
+  annotate("text", x=xr[2]-0.1*diff(xr), y=0.92, label="Mature") +
+  coord_cartesian(ylim=c(0,1)) +
+  labs(x="Minimum score of radius and ulna", y="Probability of maturity", title="Males — Score of radius and ulna") +
+  theme_bw(base_size = 16) +   # increase base font size
+  theme(
+    axis.title = element_text(size = 18),   # axis labels
+    axis.text  = element_text(size = 14),   # axis ticks
+    plot.title = element_text(size = 20, face = "bold"),  # title
+    legend.text = element_text(size = 14)   # in case legend is on
+  )
+
+
+
+ggsave("hof_male_Radius_Ulna_Min.png", p_m_Radius_Ulna_Min,
+       path  = "C:/Users/ehanninger/OneDrive - Massey University/Desktop/Evis PhD/Chapters/Chapter 5. Sexual maturity in relation to bone age/Statistical analysis/Final",
+       width = 7, height = 5, dpi = 300)
+p_m_Radius_Ulna_Min
+
+
+```
+
+## **2.3. Sex differences in midpoint (L50) and slope — Total bone score**
+
+```{r sex-diff-URM2.3., message=FALSE, warning=FALSE}
+suppressPackageStartupMessages({
+  library(dplyr); library(posterior); library(ggplot2); library(knitr)
+})
+
+# EXACT object names
+m_f <- posterior::as_draws_df(fit_F_URM)$m
+w_f <- posterior::as_draws_df(fit_F_URM)$w
+m_m <- posterior::as_draws_df(fit_M_URM)$m
+w_m <- posterior::as_draws_df(fit_M_URM)$w
+
+# Differences (female – male)
+m_diff <- m_f - m_m
+w_diff <- w_f - w_m
+
+summ <- function(x) {
+  qs <- quantile(x, c(0.025, 0.5, 0.975))
+  data.frame(
+    mean   = mean(x),
+    sd     = sd(x),
+    q2.5   = qs[1],
+    q50    = qs[2],
+    q97.5  = qs[3],
+    p_gt0  = mean(x > 0),
+    p_lt0  = mean(x < 0)
+  )
+}
+
+tab_total <- bind_rows(
+  summ(m_diff) %>% mutate(parameter = "m (midpoint, female - male)"),
+  summ(w_diff) %>% mutate(parameter = "w (slope, female - male)")
+) %>% relocate(parameter)
+
+kable(tab_total, digits = 3,
+      caption = "URM — Posterior differences by sex (female – male): mean, SD, 95% CrI, and tail probabilities")
+
+# Optional quick plot (delete if not needed)
+df_plot <- tibble::tibble(
+  value = c(as.numeric(m_diff), as.numeric(w_diff)),
+  param = rep(c("midpoint (m)", "slope (w)"),
+              times = c(length(m_diff), length(w_diff)))
+)
+
+ggplot(df_plot, aes(x = value)) +
+  geom_density() +
+  geom_vline(xintercept = 0, linetype = 2) +
+  facet_wrap(~ param, scales = "free") +
+  labs(x = "Female - Male", y = "Density",
+       title = "Posterior differences (female - male): Minimal score of radius and ulna") +
+  theme_classic()
+```
+
